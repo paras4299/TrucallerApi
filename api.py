@@ -6,12 +6,16 @@ app = Flask(__name__)
 
 async def fetch(session, url, headers):
     async with session.get(url, headers=headers) as response:
-        return await response.json()
+        return response
 
 async def get_data(url, headers):
     async with aiohttp.ClientSession() as session:
         response = await fetch(session, url, headers)
-    return response
+        if 'application/json' in response.headers['Content-Type']:
+            data = await response.json()
+        else:
+            data = await response.text()
+    return data
 
 @app.route('/search', methods=['GET'])
 async def get_phone_info():
