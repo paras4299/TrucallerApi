@@ -4,13 +4,13 @@ import aiohttp
 
 app = Flask(__name__)
 
-async def fetch(session, url):
-    async with session.get(url) as response:
+async def fetch(session, url, headers):
+    async with session.get(url, headers=headers) as response:
         return await response.json()
 
 async def get_data(url, headers):
     async with aiohttp.ClientSession() as session:
-        response = await fetch(session, url)
+        response = await fetch(session, url, headers)
     return response
 
 @app.route('/search', methods=['GET'])
