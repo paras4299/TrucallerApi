@@ -5,16 +5,22 @@ import aiohttp
 app = Flask(__name__)
 
 async def fetch(session, url, headers):
-    async with session.get(url, headers=headers) as response:
-        return response
+    try:
+        async with session.get(url, headers=headers) as response:
+            return response
+    except aiohttp.ClientConnectionError:
+        return None
 
 async def get_data(url, headers):
     async with aiohttp.ClientSession() as session:
         response = await fetch(session, url, headers)
-        if 'application/json' in response.headers['Content-Type']:
-            data = await response.json()
+        if response:
+            if 'application/json' in response.headers.get('Content-Type', ''):
+                data = await response.json()
+            else:
+                data = await response.text()
         else:
-            data = await response.text()
+            data = None
     return data
 
 @app.route('/search', methods=['GET'])
