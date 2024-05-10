@@ -6,7 +6,7 @@ app = Flask(__name__)
 
 async def fetch(session, url, headers):
     try:
-        async with session.get(url, headers=headers, timeout=10) as response:
+        async with session.get(url, headers=headers, timeout=3) as response:
             return await response.json()
     except aiohttp.ClientConnectionError:
         return None
