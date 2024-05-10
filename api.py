@@ -66,12 +66,14 @@ def get_phone_info():
         except (json.JSONDecodeError, KeyError):
             unknown_name = ""
 
-        if name == "Not found" and unknown_name:
-           names = unknown_name
-        elif name != "Not found" and unknown_name:
+        if name and unknown_name:
            names = f"{name}/{unknown_name}"
-        else:
+        elif name:
            names = name
+        elif unknown_name:
+           names = unknown_name
+        else:
+           names = "Not found"
 
         response = {
             "number": formatted_number,
