@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify
 import requests
-from urllib.parse import urlencode
+from concurrent.futures import ThreadPoolExecutor
 import json
 import base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+import time
+import cachetools.func
 
 app = Flask(__name__)
 
@@ -14,6 +16,16 @@ proxies = {
     'http': f'http://{proxy_info}@p.webshare.io:80',
     'https': f'http://{proxy_info}@p.webshare.io:80'
 }
+
+# Create optimized session with connection pooling
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=20,
+    pool_maxsize=20,
+    max_retries=0
+)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 
 def format_number(number):
     if number:
@@ -26,9 +38,12 @@ def format_number(number):
             return formatted_number
     return number
 
-def http_call(url, headers):
-    response = requests.get(url, headers=headers, proxies=proxies)
-    return response.json()
+def http_call(url, headers, timeout=3):
+    try:
+        response = session.get(url, headers=headers, proxies=proxies, timeout=timeout)
+        return response.json()
+    except Exception:
+        return {}
 
 key = base64.b64decode("mKEP38MTRSMfmSJJiRuVgGJQ2xpzo9o5lsSm/DbkzwY=")
 iv = base64.b64decode("AAECAwQFBgcICQoLDA0ODw==")
@@ -44,7 +59,9 @@ def get_decode(data):
     decrypted_data = cipher.decrypt(base64.b64decode(data))
     unpadded_data = unpad(decrypted_data, AES.block_size)
     return unpadded_data.decode()
-    
+
+# Cache results for 1 hour
+@cachetools.func.ttl_cache(maxsize=1000, ttl=3600)
 def numBox(number):
     url = 'https://api.numberbox.app/search'
     ccode = number[:2]
@@ -63,26 +80,36 @@ def numBox(number):
         'accept-encoding': 'gzip',
         'user-agent': 'okhttp/4.11.0'
     }
-    response = requests.post(url, headers=headers, json=data, proxies=proxies)
-    json_data = response.json()
     
-    names = []
-    for item in json_data["result"]:
-         name = item.get("name", "")
-         if name != 'قم بتحديث التطبيق من متجر جوجل بلاي':
-              names.append(name)
-
-    return names
+    try:
+        response = session.post(url, headers=headers, json=data, proxies=proxies, timeout=3)
+        json_data = response.json()
+        
+        names = []
+        for item in json_data.get("result", []):
+             name = item.get("name", "")
+             if name != 'Ù‚Ù… Ø¨ØªØ­Ø¯ÙŠØ« Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ Ù…Ù† Ù…ØªØ¬Ø± Ø¬ÙˆØ¬Ù„ Ø¨Ù„Ø§ÙŠ':
+                  names.append(name)
+        return names
+    except Exception:
+        return []
 
 @app.route('/search', methods=['GET'])
 def search_number():
     number = request.args.get('number')
     
-    if number:
-        try:
-            formatted_number = format_number(number)
-            numbox = numBox(formatted_number)
-
+    if not number:
+        error_response = {"error": "Invalid request parameters"}
+        return jsonify(error_response), 400
+    
+    try:
+        formatted_number = format_number(number)
+        
+        # Execute all API calls in parallel
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            # Start all tasks
+            numbox_future = executor.submit(numBox, formatted_number)
+            
             # Eyecon API
             eyecon_url = f'https://api.eyecon-app.com/app/getnames.jsp?cli={formatted_number}&lang=en&is_callerid=true&is_ic=true&cv=vc_494_vn_4.0.494_a&requestApi=okHttp&source=MenifaFragment'
             eyecon_headers = {
@@ -94,56 +121,70 @@ def search_number():
                 "e-auth-k": "PgdtSBeR0MumR7fO",
                 "accept-charset": "UTF-8"
             }
-
-            eyecon_name = ""
-            try:
-                eyecon_response = http_call(eyecon_url, eyecon_headers)
-                eyecon_name = eyecon_response[0]["name"]
-            except (json.JSONDecodeError, IndexError):
-                pass
-
+            eyecon_future = executor.submit(http_call, eyecon_url, eyecon_headers)
+            
             # Messente API
             messente_url = f"https://messente.com/messente-api/number-lookup/?phone_number=%2B{formatted_number}"
             messente_headers = {"host": "messente.com"}
-            try:
-                messente_response = http_call(messente_url, messente_headers)
-                carrier = messente_response["originalCarrierName"]
-                country = messente_response["countryName"]
-                timeZone = messente_response["timeZone"]
-            except (json.JSONDecodeError, KeyError):
-                carrier = ""
-                country = ""
-                timeZone = ""
-
+            messente_future = executor.submit(http_call, messente_url, messente_headers)
+            
             # CallApp API
             callapp_url = f"https://s.callapp.com/callapp-server/csrch?cpn=%2B{formatted_number}&myp=gp.104059830954081456032&ibs=0&cid=0&tk=0007847886&cvc=2140"
             callapp_headers = {"host": "s.callapp.com"}
+            callapp_future = executor.submit(http_call, callapp_url, callapp_headers)
+            
+            # Get results with timeout handling
+            try:
+                numbox_names = numbox_future.result(timeout=3)
+            except Exception:
+                numbox_names = []
+                
+            # Process eyecon result
+            eyecon_name = ""
+            try:
+                eyecon_response = eyecon_future.result(timeout=1)
+                if eyecon_response and isinstance(eyecon_response, list) and len(eyecon_response) > 0:
+                    eyecon_name = eyecon_response[0].get("name", "")
+            except Exception:
+                pass
+                
+            # Process messente result
+            carrier = ""
+            country = ""
+            timeZone = ""
+            try:
+                messente_response = messente_future.result(timeout=1)
+                carrier = messente_response.get("originalCarrierName", "")
+                country = messente_response.get("countryName", "")
+                timeZone = messente_response.get("timeZone", "")
+            except Exception:
+                pass
+                
+            # Process callapp result
             unknown_name = ""
             try:
-                callapp_response = http_call(callapp_url, callapp_headers)
-                unknown_name = callapp_response["name"]
-            except (json.JSONDecodeError, KeyError):
+                callapp_response = callapp_future.result(timeout=1)
+                unknown_name = callapp_response.get("name", "")
+            except Exception:
                 pass
 
-            names = [name for name in [eyecon_name, unknown_name] if name]
-            name_string = '/'.join(names) if names else "Not found"
+        # Combine results exactly as in the original code
+        names = [name for name in [eyecon_name, unknown_name] if name]
+        name_string = '/'.join(names) if names else "Not found"
 
-            response = {
-                "number": formatted_number,
-                "name": name_string,
-                "carrier": carrier,
-                "country": country,
-                "timezone": timeZone,
-                "names": numbox
-            }
+        response = {
+            "number": formatted_number,
+            "name": name_string,
+            "carrier": carrier,
+            "country": country,
+            "timezone": timeZone,
+            "names": numbox_names
+        }
 
-            return jsonify(response), 200
-        except Exception as e:
-            error_response = {"error": str(e)}
-            return jsonify(error_response), 500
-    else:
-        error_response = {"error": "Invalid request parameters"}
-        return jsonify(error_response), 400
+        return jsonify(response), 200
+    except Exception as e:
+        error_response = {"error": str(e)}
+        return jsonify(error_response), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, threaded=True)
