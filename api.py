@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 import requests
-from urllib.parse import urlencode
 import base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -27,11 +26,6 @@ def get_encode(data):
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded_data = pad(data.encode(), AES.block_size)
     return base64.b64encode(cipher.encrypt(padded_data)).decode()
-
-def get_decode(data):
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted_data = cipher.decrypt(base64.b64decode(data))
-    return unpad(decrypted_data, AES.block_size).decode()
 
 def format_number(number):
     """Formats phone number to international format"""
@@ -72,28 +66,25 @@ def numBox(number):
     try:
         response = session.post(url, headers=headers, json=data, timeout=5)
         json_data = response.json()
-        return [
-            item.get("name", "") 
+        
+        # Ensure we collect all valid names
+        return list(set(
+            item.get("name", "").strip() 
             for item in json_data.get("result", []) 
-            if item.get("name") != 'قم بتحديث التطبيق من متجر جوجل بلاي'
-        ]
+            if item.get("name") and item.get("name") != 'قم بتحديث التطبيق من متجر جوجل بلاي'
+        ))
     except requests.RequestException:
         return []
 
 def fetch_eyecon(formatted_number):
     """Fetches name from Eyecon API"""
-    url = f'https://api.eyecon-app.com/app/getnames.jsp?cli={formatted_number}&lang=en&is_callerid=true&is_ic=true&cv=vc_494_vn_4.0.494_a&requestApi=okHttp&source=MenifaFragment'
+    url = f'https://api.eyecon-app.com/app/getnames.jsp?cli={formatted_number}&lang=en'
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "accept": "application/json",
-        "e-auth-v": "e1",
-        "e-auth": "1e942fe9-5b71-4c3f-9ee7-56344780dee0",
-        "e-auth-c": "24",
-        "e-auth-k": "PgdtSBeR0MumR7fO",
-        "accept-charset": "UTF-8"
+        "accept": "application/json"
     }
     data = http_call(url, headers)
-    return data[0]["name"] if data else ""
+    return data[0]["name"].strip() if data and "name" in data[0] else ""
 
 def fetch_messente(formatted_number):
     """Fetches carrier and location from Messente API"""
@@ -101,17 +92,17 @@ def fetch_messente(formatted_number):
     headers = {"host": "messente.com"}
     data = http_call(url, headers)
     return (
-        data.get("originalCarrierName", ""),
-        data.get("countryName", ""),
-        data.get("timeZone", "")
+        data.get("originalCarrierName", "").strip(),
+        data.get("countryName", "").strip(),
+        data.get("timeZone", "").strip()
     )
 
 def fetch_callapp(formatted_number):
     """Fetches name from CallApp API"""
-    url = f"https://s.callapp.com/callapp-server/csrch?cpn=%2B{formatted_number}&myp=gp.104059830954081456032&ibs=0&cid=0&tk=0007847886&cvc=2140"
+    url = f"https://s.callapp.com/callapp-server/csrch?cpn=%2B{formatted_number}"
     headers = {"host": "s.callapp.com"}
     data = http_call(url, headers)
-    return data.get("name", "")
+    return data.get("name", "").strip() if data and "name" in data else ""
 
 @app.route('/search', methods=['GET'])
 def search_number():
@@ -133,7 +124,9 @@ def search_number():
         carrier, country, timeZone = future_messente.result()
         callapp_name = future_callapp.result()
 
-    name_string = '/'.join([name for name in [eyecon_name, callapp_name] if name]) or "Not found"
+    # Combine all unique names properly
+    all_names = set(filter(None, [eyecon_name, callapp_name] + numbox))
+    name_string = ' / '.join(all_names) if all_names else "Not found"
 
     response = {
         "number": formatted_number,
@@ -141,7 +134,7 @@ def search_number():
         "carrier": carrier,
         "country": country,
         "timezone": timeZone,
-        "names": numbox
+        "names": list(all_names)
     }
 
     return jsonify(response), 200
